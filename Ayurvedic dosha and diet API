@@ -1,0 +1,579 @@
+# main.py
+# Ayurvedic Dosha Calculator + Diet Recommender API
+# Educational use only – NOT medical advice.
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Literal, Dict, Optional
+
+app = FastAPI(
+    title="Ayurvedic Dosha & Diet API",
+    description="Simple educational API to calculate dosha and suggest diet/recipes.",
+    version="1.0.0",
+)
+
+# ---------- DATA MODELS ----------
+
+Choice = Literal["a", "b", "c"]
+
+class OptionModel(BaseModel):
+    key: Choice
+    text: str
+    dosha: Literal["Vata", "Pitta", "Kapha"]
+
+class QuestionModel(BaseModel):
+    id: int
+    question: str
+    options: List[OptionModel]
+
+class AnswerModel(BaseModel):
+    question_id: int
+    choice: Choice
+
+class QuizRequest(BaseModel):
+    answers: List[AnswerModel]
+
+class DoshaScores(BaseModel):
+    Vata: int
+    Pitta: int
+    Kapha: int
+
+class DoshaDistribution(BaseModel):
+    dosha: str
+    score: int
+    percent: float
+
+class QuizResult(BaseModel):
+    scores: DoshaScores
+    distribution: List[DoshaDistribution]
+    dominant_doshas: List[str]
+    interpretation: str
+
+class Meal(BaseModel):
+    name: str
+    description: str
+
+class Recipe(BaseModel):
+    name: str
+    suitable_for: List[str]        # doshas
+    season_hint: Optional[str] = None
+    ingredients: List[str]
+    instructions: List[str]
+
+class DietPlanRequest(BaseModel):
+    dosha: Literal["Vata", "Pitta", "Kapha"]
+    season: Optional[Literal["winter", "summer", "monsoon", "spring", "autumn"]] = None
+
+class DietPlanResponse(BaseModel):
+    dosha: str
+    season: Optional[str]
+    recommended_foods: List[str]
+    foods_to_avoid: List[str]
+    lifestyle_tips: List[str]
+    daily_meals: Dict[str, Meal]
+    sample_recipes: List[Recipe]
+    note: str
+
+class FullPlanRequest(BaseModel):
+    quiz: QuizRequest
+    season: Optional[Literal["winter", "summer", "monsoon", "spring", "autumn"]] = None
+
+class FullPlanResponse(BaseModel):
+    quiz_result: QuizResult
+    diet_plan: DietPlanResponse
+
+
+# ---------- QUIZ DEFINITION ----------
+
+# Each option has a dosha tag for scoring
+QUESTIONS: List[QuestionModel] = [
+    QuestionModel(
+        id=1,
+        question="Body frame & weight tendency",
+        options=[
+            OptionModel(key="a", text="Light, thin, finds it hard to gain weight", dosha="Vata"),
+            OptionModel(key="b", text="Medium build, gains and loses weight easily", dosha="Pitta"),
+            OptionModel(key="c", text="Broad, strong, tends to gain weight easily", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=2,
+        question="Skin type",
+        options=[
+            OptionModel(key="a", text="Dry, rough, cool to touch", dosha="Vata"),
+            OptionModel(key="b", text="Warm, reddish, may have acne or moles", dosha="Pitta"),
+            OptionModel(key="c", text="Soft, oily, thick, cool and pale", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=3,
+        question="Appetite & digestion",
+        options=[
+            OptionModel(key="a", text="Irregular appetite, sometimes forgets to eat", dosha="Vata"),
+            OptionModel(key="b", text="Strong appetite, irritated if meals delayed", dosha="Pitta"),
+            OptionModel(key="c", text="Slow but steady appetite, can skip meals easily", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=4,
+        question="Energy pattern",
+        options=[
+            OptionModel(key="a", text="Bursts of energy, then sudden tiredness", dosha="Vata"),
+            OptionModel(key="b", text="Consistent, intense energy; likes to stay active", dosha="Pitta"),
+            OptionModel(key="c", text="Slow to start but good stamina", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=5,
+        question="Climate preference",
+        options=[
+            OptionModel(key="a", text="Prefers warm climate, dislikes cold and wind", dosha="Vata"),
+            OptionModel(key="b", text="Prefers cool climate, dislikes heat", dosha="Pitta"),
+            OptionModel(key="c", text="Handles most climates, dislikes damp/cold", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=6,
+        question="Sleep pattern",
+        options=[
+            OptionModel(key="a", text="Light sleeper, wakes up easily", dosha="Vata"),
+            OptionModel(key="b", text="Moderate sleeper, 6–8 hours", dosha="Pitta"),
+            OptionModel(key="c", text="Deep sleeper, sleeps long", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=7,
+        question="Mind & thoughts",
+        options=[
+            OptionModel(key="a", text="Fast thinker, creative, may be anxious", dosha="Vata"),
+            OptionModel(key="b", text="Sharp, focused, perfectionist", dosha="Pitta"),
+            OptionModel(key="c", text="Calm, steady, sometimes slow", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=8,
+        question="Emotional tendency under stress",
+        options=[
+            OptionModel(key="a", text="Fear, worry, overthinking", dosha="Vata"),
+            OptionModel(key="b", text="Anger, irritation, frustration", dosha="Pitta"),
+            OptionModel(key="c", text="Withdrawal, sadness, overeating or oversleeping", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=9,
+        question="Speech style",
+        options=[
+            OptionModel(key="a", text="Fast, animated, jumps topics", dosha="Vata"),
+            OptionModel(key="b", text="Clear, direct, intense", dosha="Pitta"),
+            OptionModel(key="c", text="Slow, calm, soothing", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=10,
+        question="General body temperature",
+        options=[
+            OptionModel(key="a", text="Usually feels cold; cool hands/feet", dosha="Vata"),
+            OptionModel(key="b", text="Usually feels warm or hot", dosha="Pitta"),
+            OptionModel(key="c", text="Neutral or slightly cool", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=11,
+        question="Physical activity preference",
+        options=[
+            OptionModel(key="a", text="Likes variety and movement", dosha="Vata"),
+            OptionModel(key="b", text="Competitive, driven", dosha="Pitta"),
+            OptionModel(key="c", text="Prefers slow, steady pace", dosha="Kapha"),
+        ],
+    ),
+    QuestionModel(
+        id=12,
+        question="Memory style",
+        options=[
+            OptionModel(key="a", text="Learns fast, forgets fast", dosha="Vata"),
+            OptionModel(key="b", text="Learns fast, remembers details", dosha="Pitta"),
+            OptionModel(key="c", text="Learns slowly, remembers long", dosha="Kapha"),
+        ],
+    ),
+]
+
+QUESTION_MAP: Dict[int, QuestionModel] = {q.id: q for q in QUESTIONS}
+
+
+# ---------- QUIZ LOGIC ----------
+
+def calculate_quiz_result(quiz: QuizRequest) -> QuizResult:
+    scores = {"Vata": 0, "Pitta": 0, "Kapha": 0}
+
+    for ans in quiz.answers:
+        q = QUESTION_MAP.get(ans.question_id)
+        if not q:
+            raise HTTPException(status_code=400, detail=f"Invalid question_id: {ans.question_id}")
+        # find option
+        opt = next((o for o in q.options if o.key == ans.choice), None)
+        if not opt:
+            raise HTTPException(status_code=400, detail=f"Invalid choice for question {ans.question_id}")
+        scores[opt.dosha] += 1
+
+    total = sum(scores.values()) or 1
+
+    distribution_list: List[DoshaDistribution] = []
+    for d in ["Vata", "Pitta", "Kapha"]:
+        distribution_list.append(
+            DoshaDistribution(
+                dosha=d,
+                score=scores[d],
+                percent=(scores[d] / total) * 100.0,
+            )
+        )
+
+    max_score = max(scores.values())
+    dominant = [d for d, s in scores.items() if s == max_score]
+
+    if len(dominant) == 1:
+        interp = f"Primarily {dominant[0]} constitution."
+    else:
+        combo = " + ".join(dominant)
+        interp = f"Dual/combined constitution: {combo}."
+
+    return QuizResult(
+        scores=DoshaScores(**scores),
+        distribution=distribution_list,
+        dominant_doshas=dominant,
+        interpretation=interp,
+    )
+
+
+# ---------- DIET / MEAL / RECIPE DATA ----------
+
+BASE_DIET = {
+    "Vata": {
+        "recommended": [
+            "Warm, cooked foods (soups, stews, kichdi)",
+            "Healthy oils: ghee, sesame oil, olive oil",
+            "Sweet, ripe fruits: mango, banana, berries, dates",
+            "Warm milk with turmeric or nutmeg",
+            "Root vegetables: sweet potato, carrots, beets",
+        ],
+        "avoid": [
+            "Cold, raw salads in excess",
+            "Dry foods: chips, crackers, popcorn",
+            "Ice-cold drinks and excess caffeine",
+            "Skipping meals or irregular eating",
+        ],
+        "lifestyle": [
+            "Follow regular routine (sleep & meals same time)",
+            "Stay warm, avoid cold dry wind",
+            "Gentle yoga, grounding practices, oil massage",
+            "Go to bed early, avoid overstimulation at night",
+        ],
+    },
+    "Pitta": {
+        "recommended": [
+            "Cooling foods: cucumber, coconut, melons, leafy greens",
+            "Grains: rice, oats, wheat (in moderation)",
+            "Milk, ghee, mild paneer (if tolerated)",
+            "Herbs/spices: coriander, fennel, mint, cardamom",
+            "Cool drinks: coconut water, coriander water",
+        ],
+        "avoid": [
+            "Very spicy, oily, and fried foods",
+            "Excess sour & salty foods",
+            "Alcohol, cigarettes, strong coffee",
+            "Tomatoes, chilies, fermented foods in excess",
+        ],
+        "lifestyle": [
+            "Avoid direct sun and overheating",
+            "Do calming exercise like walking, swimming, yoga",
+            "Take cooling breaks during intense work",
+            "Practice patience; avoid unnecessary competition",
+        ],
+    },
+    "Kapha": {
+        "recommended": [
+            "Light, warm meals: soups, steamed veggies, millets",
+            "Spices: black pepper, ginger, turmeric, cloves",
+            "Fruits: apples, pears, pomegranate, berries",
+            "Bitter & astringent veggies: spinach, fenugreek, broccoli",
+            "Herbal teas: ginger, tulsi, cinnamon tea",
+        ],
+        "avoid": [
+            "Heavy, oily, fried foods",
+            "Excess sweets and desserts",
+            "Too much dairy (cheese, curd, ice cream)",
+            "Cold drinks and overeating at night",
+        ],
+        "lifestyle": [
+            "Daily exercise: brisk walking, yoga, light jogging",
+            "Avoid daytime napping",
+            "Keep routines stimulating and active",
+            "Prefer light dinner, finish 3 hours before sleep",
+        ],
+    },
+}
+
+SEASONAL_ADJUSTMENTS = {
+    "Vata": {
+        "winter": {
+            "add": ["Extra ghee, sesame oil, and root-vegetable stews"],
+            "avoid": ["Dry fasting; skipping warm meals"],
+        },
+        "summer": {
+            "add": ["A bit more juicy fruits like grapes and melons"],
+            "avoid": [],
+        },
+        "monsoon": {
+            "add": ["Ginger tea, lightly spiced soups for digestion"],
+            "avoid": ["Raw salads and street food"],
+        },
+    },
+    "Pitta": {
+        "summer": {
+            "add": ["Coconut water, cucumber raita, mint chutney"],
+            "avoid": ["All chili-based dishes and deep-fried snacks"],
+        },
+        "winter": {
+            "add": ["Mild warming spices (cumin, coriander) without chili"],
+            "avoid": [],
+        },
+    },
+    "Kapha": {
+        "monsoon": {
+            "add": ["Hot herbal teas, pepper-ginger soups"],
+            "avoid": ["Cold curd, cold drinks, heavy sweets"],
+        },
+        "winter": {
+            "add": ["Spiced millets, warm baked veggies"],
+            "avoid": [],
+        },
+    },
+}
+
+RECIPES: List[Recipe] = [
+    Recipe(
+        name="Warm Vata Kichdi Bowl",
+        suitable_for=["Vata"],
+        season_hint="winter/monsoon",
+        ingredients=[
+            "1/2 cup rice",
+            "1/4 cup moong dal",
+            "1 tbsp ghee",
+            "1/2 tsp cumin seeds",
+            "1/2 tsp grated ginger",
+            "Vegetables: carrot, pumpkin, beans",
+            "Salt to taste",
+        ],
+        instructions=[
+            "Wash rice and dal together.",
+            "Heat ghee, add cumin and ginger.",
+            "Add chopped vegetables, sauté lightly.",
+            "Add rice and dal, mix well.",
+            "Add 3–4 cups water, salt, cook until soft and porridge-like.",
+        ],
+    ),
+    Recipe(
+        name="Cooling Pitta Coconut Rice",
+        suitable_for=["Pitta"],
+        season_hint="summer",
+        ingredients=[
+            "1 cup cooked rice (cooled)",
+            "1/4 cup grated fresh coconut",
+            "1 tbsp ghee or coconut oil",
+            "1 tsp mustard seeds",
+            "Few curry leaves",
+            "1 tbsp chopped coriander",
+            "Salt to taste",
+        ],
+        instructions=[
+            "Heat ghee/oil in a pan, add mustard seeds and curry leaves.",
+            "Add grated coconut, sauté lightly without browning.",
+            "Add cooled rice and salt, mix gently.",
+            "Finish with chopped coriander and serve slightly warm or room temperature.",
+        ],
+    ),
+    Recipe(
+        name="Spicy Kapha Ginger Soup",
+        suitable_for=["Kapha"],
+        season_hint="winter/monsoon",
+        ingredients=[
+            "1 tbsp grated ginger",
+            "1 clove garlic (optional)",
+            "1/2 tsp black pepper",
+            "Vegetable stock or water",
+            "Mixed veggies: carrot, spinach, beans",
+            "1 tsp oil or ghee",
+            "Salt to taste",
+        ],
+        instructions=[
+            "Heat oil/ghee, sauté ginger and garlic.",
+            "Add chopped vegetables, stir-fry for 2–3 minutes.",
+            "Add stock/water, salt, and black pepper.",
+            "Simmer until veggies are soft; serve hot.",
+        ],
+    ),
+]
+
+
+def build_daily_meals(dosha: str) -> Dict[str, Meal]:
+    if dosha == "Vata":
+        return {
+            "breakfast": Meal(
+                name="Warm spiced porridge",
+                description="Oats or ragi porridge with warm milk, ghee, dates, and cardamom."
+            ),
+            "mid_morning": Meal(
+                name="Sweet fruit & herbal tea",
+                description="Ripe banana or mango with mild ginger or tulsi tea."
+            ),
+            "lunch": Meal(
+                name="Kichdi with ghee",
+                description="Moong dal–rice kichdi with cooked vegetables and a spoon of ghee."
+            ),
+            "evening_snack": Meal(
+                name="Roasted nuts",
+                description="Handful of warm roasted almonds or cashews with herbal tea."
+            ),
+            "dinner": Meal(
+                name="Light vegetable soup",
+                description="Warm, oily vegetable soup with root veggies, taken early in the evening."
+            ),
+        }
+
+    if dosha == "Pitta":
+        return {
+            "breakfast": Meal(
+                name="Cooling fruit bowl",
+                description="Melons, pears, apples with a little soaked raisin; no sour curd."
+            ),
+            "mid_morning": Meal(
+                name="Coconut water",
+                description="Fresh coconut water with a small handful of soaked almonds."
+            ),
+            "lunch": Meal(
+                name="Rice, dal & salad",
+                description="Steamed rice, mild dal with ghee, cucumber salad, and coriander chutney."
+            ),
+            "evening_snack": Meal(
+                name="Fresh fruit or buttermilk",
+                description="Sweet fruits or thin, mildly spiced buttermilk (no chili)."
+            ),
+            "dinner": Meal(
+                name="Simple veggie khichdi",
+                description="Light, less oily khichdi with cooling veggies like bottle gourd."
+            ),
+        }
+
+    # Kapha
+    return {
+        "breakfast": Meal(
+            name="Light millet upma",
+            description="Vegetable upma made with millet, with ginger and pepper."
+        ),
+        "mid_morning": Meal(
+            name="Herbal tea",
+            description="Hot ginger–tulsi tea, maybe with a slice of apple."
+        ),
+        "lunch": Meal(
+            name="Steamed veggies & millet",
+            description="Mixed steamed veggies, small portion of millet or brown rice, dal with spices."
+        ),
+        "evening_snack": Meal(
+            name="Roasted chana",
+            description="A small bowl of roasted gram or sprouts salad; no fried snacks."
+        ),
+        "dinner": Meal(
+            name="Thin vegetable soup",
+            description="Clear vegetable soup with pepper and herbs; very light dinner."
+        ),
+    }
+
+
+def build_diet_plan(req: DietPlanRequest) -> DietPlanResponse:
+    dosha = req.dosha
+    base = BASE_DIET[dosha]
+    recommended = base["recommended"][:]
+    avoid = base["avoid"][:]
+    lifestyle = base["lifestyle"][:]
+
+    if req.season:
+        season_data = SEASONAL_ADJUSTMENTS.get(dosha, {}).get(req.season, {})
+        if "add" in season_data:
+            recommended += season_data["add"]
+        if "avoid" in season_data:
+            avoid += season_data["avoid"]
+
+    # pick recipes that match dosha, roughly consider season
+    recipes_for_dosha = [
+        r for r in RECIPES
+        if dosha in r.suitable_for and (
+            req.season is None or r.season_hint is None or req.season in r.season_hint
+        )
+    ]
+
+    daily_meals = build_daily_meals(dosha)
+
+    return DietPlanResponse(
+        dosha=dosha,
+        season=req.season,
+        recommended_foods=recommended,
+        foods_to_avoid=avoid,
+        lifestyle_tips=lifestyle,
+        daily_meals=daily_meals,
+        sample_recipes=recipes_for_dosha,
+        note=(
+            "This plan is a simplified educational guide based on Ayurvedic principles. "
+            "It is NOT a medical prescription. Consult a qualified Ayurvedic doctor or nutritionist "
+            "for personalized advice."
+        ),
+    )
+
+
+# ---------- API ENDPOINTS ----------
+
+@app.get("/quiz", response_model=List[QuestionModel])
+def get_quiz():
+    """
+    Get the list of dosha quiz questions and options.
+    """
+    return QUESTIONS
+
+
+@app.post("/quiz/calculate", response_model=QuizResult)
+def quiz_calculate(quiz: QuizRequest):
+    """
+    Submit quiz answers and get dosha scores and dominant dosha(s).
+    """
+    if not quiz.answers:
+        raise HTTPException(status_code=400, detail="No answers provided.")
+    return calculate_quiz_result(quiz)
+
+
+@app.post("/diet-plan", response_model=DietPlanResponse)
+def diet_plan(req: DietPlanRequest):
+    """
+    Get Ayurvedic diet + meals + recipes for a dosha (optionally by season).
+    """
+    return build_diet_plan(req)
+
+
+@app.post("/full-plan", response_model=FullPlanResponse)
+def full_plan(req: FullPlanRequest):
+    """
+    Combine quiz + diet:
+    1) Calculate dosha from quiz
+    2) Use dominant dosha to generate diet, meals, and recipes
+    """
+    quiz_result = calculate_quiz_result(req.quiz)
+    dominant = quiz_result.dominant_doshas[0]  # take first if dual
+
+    diet_req = DietPlanRequest(dosha=dominant, season=req.season)
+    diet = build_diet_plan(diet_req)
+
+    return FullPlanResponse(quiz_result=quiz_result, diet_plan=diet)
+
+
+# ---------- RUN (for local testing) ----------
+# Run with: uvicorn main:app --reload
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
